@@ -2,7 +2,6 @@ import mysql.connector
 from mysql.connector import Error, pooling
 import config
 import logging
-import time
 
 class Database:
     db_config = {
@@ -14,29 +13,20 @@ class Database:
         "charset": 'utf8mb4',
         "collation": 'utf8mb4_unicode_ci'
     }
-    
     _pool = None
 
     @classmethod
     def get_pool(cls):
         if cls._pool is None:
             try:
-                cls._pool = pooling.MySQLConnectionPool(
-                    pool_name="mypool",
-                    pool_size=5,
-                    pool_reset_session=True,
-                    **cls.db_config
-                )
-            except Error as e:
-                logging.error(f"Pool yaratishda xato: {e}")
+                cls._pool = pooling.MySQLConnectionPool(pool_name="mypool", pool_size=5, pool_reset_session=True, **cls.db_config)
+            except Error as e: logging.error(f"Pool Error: {e}")
         return cls._pool
 
     @staticmethod
     def get_connection():
         pool = Database.get_pool()
-        if pool:
-            return pool.get_connection()
-        return None
+        return pool.get_connection() if pool else None
 
     @staticmethod
     def init_db():
@@ -44,13 +34,12 @@ class Database:
         if not conn: return False
         cursor = conn.cursor()
         try:
-            # 1. USERS
+            # 1. USERS (Mijoz & Chevar)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     chat_id BIGINT PRIMARY KEY,
                     first_name VARCHAR(255),
                     phone VARCHAR(50),
-                    location VARCHAR(500),
                     role ENUM('admin', 'chevar') DEFAULT 'chevar',
                     status ENUM('pending', 'active', 'rejected') DEFAULT 'pending',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -60,8 +49,16 @@ class Database:
             # 2. PRODUCT TYPES
             cursor.execute("CREATE TABLE IF NOT EXISTS product_types (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
 
-            # 3. OPERATIONS (Rastenka)
-            cursor.execute("CREATE TABLE IF NOT EXISTS operations (id INT AUTO_INCREMENT PRIMARY KEY, product_type_id INT, name VARCHAR(255), price DECIMAL(10, 2), FOREIGN KEY (product_type_id) REFERENCES product_types(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
+            # 3. OPERATIONS (Rastenka narxlari)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS operations (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    product_type_id INT,
+                    name VARCHAR(255),
+                    price DECIMAL(10, 2),
+                    FOREIGN KEY (product_type_id) REFERENCES product_types(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
 
             # 4. BATCHES (Ombor - Bichilgan ishlar)
             cursor.execute("""
@@ -72,11 +69,12 @@ class Database:
                     total_qty INT DEFAULT 0,
                     remaining_in_warehouse INT DEFAULT 0,
                     status ENUM('active', 'completed') DEFAULT 'active',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (product_type_id) REFERENCES product_types(id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
 
-            # 5. BATCH ITEMS (Pachkalar/Razmerlar)
+            # 5. BATCH ITEMS (Razmerlar kesimida)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS batch_items (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -90,22 +88,20 @@ class Database:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
 
-            # 6. ASSIGNMENTS (Ish tarqatish) [NEW]
+            # 6. ASSIGNMENTS (Kimga qancha tarqatilgan)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS assignments (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     chevar_id BIGINT,
                     batch_item_id INT,
                     qty_assigned INT,
-                    qty_completed INT DEFAULT 0,
                     status ENUM('pending', 'accepted', 'completed') DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (chevar_id) REFERENCES users(chat_id),
                     FOREIGN KEY (batch_item_id) REFERENCES batch_items(id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
 
-            # 7. WORK LOGS (Hisobotlar)
+            # 7. WORK LOGS (Tikilgan ishlar va Pullar)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS work_logs (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -124,18 +120,10 @@ class Database:
             # 8. States
             cursor.execute("CREATE TABLE IF NOT EXISTS user_states (chat_id BIGINT PRIMARY KEY, state VARCHAR(255), data JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
 
-            # Ustunlar mavjudligini tekshirish va ALTER qilish (Mustahkamlik uchun)
-            try: cursor.execute("ALTER TABLE batches ADD COLUMN product_type_id INT AFTER id")
-            except: pass
-            try: cursor.execute("ALTER TABLE batches ADD COLUMN total_qty INT DEFAULT 0")
-            except: pass
-            try: cursor.execute("ALTER TABLE batches ADD COLUMN remaining_in_warehouse INT DEFAULT 0")
-            except: pass
-
             conn.commit()
             return True
         except Error as e:
-            logging.error(f"Db Error: {e}")
+            logging.error(f"Init Error: {e}")
             return False
         finally:
             cursor.close()
@@ -151,7 +139,7 @@ class Database:
             conn.commit()
             return cursor.lastrowid
         except Exception as e:
-            logging.error(f"Execute Error: {e} | Query: {query}")
+            logging.error(f"Exec Error: {e} | {query}")
             return None
         finally:
             cursor.close()
