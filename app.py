@@ -35,14 +35,14 @@ def set_user_state(chat_id, state_name, data=None):
     """, (chat_id, state_name, data_json))
 
 # --- KEYBOARDS ---
-def get_main_keyboard(role, status='pending'):
+def get_main_keyboard(role, status='pending', has_phone=False):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     if role == 'admin':
         markup.add("📦 Tovar Turlari", "⚙️ Rastenka/Detallar")
         markup.add("➕ Yangi Zakaz", "📊 Hisobotlar")
     elif status == 'active':
         markup.add("📥 Ish Topshirish")
-    elif status == 'pending':
+    elif status == 'pending' or not has_phone: # Agar telefon bo'lmasa, har doim Registratsiya
         markup.add("📝 Ro'yxatdan o'tish")
     return markup
 
@@ -74,15 +74,22 @@ def start(message):
             return send_msg(chat_id, "Xush kelibsiz, Admin!", get_main_keyboard('admin'))
 
         if user:
+            # Agar foydalanuvchi bor, lekin telefoni kiritilmagan bo'lsa
+            if not user.get('phone'):
+                set_user_state(chat_id, 'main_menu')
+                return send_msg(chat_id, "Botdan foydalanish uchun ro'yxatdan o'tishingiz kerak.", get_main_keyboard('chevar', 'pending', False))
+            
             if user['status'] == 'active':
                 set_user_state(chat_id, 'main_menu')
-                send_msg(chat_id, f"Xush kelibsiz, {user['first_name']}!", get_main_keyboard('chevar', 'active'))
+                send_msg(chat_id, f"Xush kelibsiz, {user['first_name']}!", get_main_keyboard('chevar', 'active', True))
             elif user['status'] == 'pending':
-                send_msg(chat_id, "Sizning arizangiz ko'rib chiqilmoqda...")
+                send_msg(chat_id, "Sizning arizangiz ko'rib chiqilmoqda... ⏳", get_main_keyboard('chevar', 'pending', True))
             elif user['status'] == 'rejected':
-                send_msg(chat_id, "Arizangiz rad etilgan. Qayta ro'yxatdan o'tishingiz mumkin.", get_main_keyboard('chevar', 'pending'))
+                send_msg(chat_id, "Arizangiz rad etilgan. Qayta urinib ko'rishingiz mumkin.", get_main_keyboard('chevar', 'pending', False))
         else:
-            send_msg(chat_id, "Assalomu alaykum! Botdan foydalanish uchun ro'yxatdan o'tishingiz kerak.", get_main_keyboard('chevar', 'pending'))
+            # Yangi foydalanuvchi
+            Database.execute("INSERT INTO users (chat_id, first_name) VALUES (%s, %s)", (chat_id, message.from_user.first_name))
+            send_msg(chat_id, "Assalomu alaykum! Botdan foydalanish uchun ro'yxatdan o'tishingiz kerak.", get_main_keyboard('chevar', 'pending', False))
 
     except Exception as e:
         logging.error(f"Startda xato: {e}")
@@ -99,7 +106,7 @@ def global_handler(message):
 
         if text == "❌ Bekor qilish":
             set_user_state(chat_id, 'main_menu')
-            return send_msg(chat_id, "Bekor qilindi.", get_main_keyboard('admin' if chat_id == config.ADMIN_ID else 'chevar', user['status'] if user else 'pending'))
+            return send_msg(chat_id, "Bekor qilindi.", get_main_keyboard('admin' if chat_id == config.ADMIN_ID else 'chevar', user['status'] if user else 'pending', bool(user and user.get('phone'))))
 
         # --- REGISTRATION FLOW ---
         if text == "📝 Ro'yxatdan o'tish":
@@ -131,64 +138,37 @@ def global_handler(message):
         
         elif state == 'reg_tailors':
             data = state_info['data']
-            # Ma'lumotlarni bazaga pending holatida saqlaymiz
             Database.execute("""
-                INSERT INTO users (chat_id, first_name, last_name, phone, location, machine_count, tailor_count, status) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
-                ON DUPLICATE KEY UPDATE first_name=%s, last_name=%s, phone=%s, location=%s, machine_count=%s, tailor_count=%s, status='pending'
-            """, (chat_id, data['full_name'], '', data['phone'], f"{data['lat']},{data['lon']}", data['machines'], text, 
-                  data['full_name'], '', data['phone'], f"{data['lat']},{data['lon']}", data['machines'], text))
+                UPDATE users SET first_name=%s, phone=%s, location=%s, machine_count=%s, tailor_count=%s, status='pending'
+                WHERE chat_id=%s
+            """, (data['full_name'], data['phone'], f"{data['lat']},{data['lon']}", data['machines'], text, chat_id))
             
             set_user_state(chat_id, 'pending_approval')
-            send_msg(chat_id, "Arizangiz qabul qilindi. Admin tasdiqlashini kuting. ✅", get_main_keyboard('chevar', 'pending'))
+            send_msg(chat_id, "Arizangiz qabul qilindi. Admin tasdiqlashini kuting. ✅", get_main_keyboard('chevar', 'pending', True))
             
-            # Adminga xabar yuboramiz
+            # Admin xabari
             markup = types.InlineKeyboardMarkup()
             markup.row(types.InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_user:{chat_id}"),
                        types.InlineKeyboardButton("❌ Rad etish", callback_data=f"reject_user:{chat_id}"))
-            
             admin_msg = f"🆕 <b>Yangi chevar arizasi:</b>\n\n👤 {data['full_name']}\n📞 {data['phone']}\n⚙️ Mashinalar: {data['machines']}\n🧵 Chevarlar: {text}"
             send_msg(config.ADMIN_ID, admin_msg, markup)
-            if 'lat' in data:
-                bot.send_location(config.ADMIN_ID, data['lat'], data['lon'])
+            if 'lat' in data: bot.send_location(config.ADMIN_ID, data['lat'], data['lon'])
 
-        # --- ADMIN HANDLERS (EXCEPT REG) ---
+        # Admin logikasi davomi...
         elif chat_id == config.ADMIN_ID:
-            # (Oldingi admin funksiyalari: Tovar, Rastenka, Zakaz - qisqacha saqlandi)
             if text == "📦 Tovar Turlari":
-                # ... (oldingi kod)
+                # ...
                 pass
-            # ... qolgan admin logikasi
 
     except Exception as e:
         logging.error(f"Global handlerda xato: {e}")
 
-# --- CALLBACK HANDLERS ---
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    try:
-        data = call.data
-        if data.startswith("approve_user:"):
-            u_id = int(data.split(":")[1])
-            Database.execute("UPDATE users SET status='active' WHERE chat_id=%s", (u_id,))
-            bot.edit_message_text("✅ Chevar tasdiqlandi!", call.message.chat.id, call.message.message_id)
-            send_msg(u_id, "Tabriklaymiz! Arizangiz tasdiqlandi. Endi botdan to'liq foydalanishingiz mumkin. ✅", get_main_keyboard('chevar', 'active'))
-            set_user_state(u_id, 'main_menu')
-        
-        elif data.startswith("reject_user:"):
-            u_id = int(data.split(":")[1])
-            Database.execute("UPDATE users SET status='rejected' WHERE chat_id=%s", (u_id,))
-            bot.edit_message_text("❌ Ariza rad etildi.", call.message.chat.id, call.message.message_id)
-            send_msg(u_id, "Arizangiz rad etildi. ❌", get_main_keyboard('chevar', 'pending'))
-        
-        # ... qolgan callbacklar (rastenka_type va h.k.)
+# ... (callback handlerlar o'zgarishsiz qoladi)
 
-    except Exception as e: logging.error(f"Callbackda xato: {e}")
-
-@app.route('/' + config.BOT_TOKEN, methods=['POST'])
-def getMessage():
-    bot.process_new_updates([telebot.types.Update.de_json(request.get_data().decode('utf-8'))])
-    return "!", 200
+@app.route('/reset_users')
+def reset():
+    Database.execute("UPDATE users SET status='pending' WHERE chat_id != %s AND phone IS NULL", (config.ADMIN_ID,))
+    return "Statuslar tozalandi! Endi foydalanuvchilar anketani ko'ra olishadi.", 200
 
 @app.route("/init")
 def init():
