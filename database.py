@@ -44,54 +44,93 @@ class Database:
         if not conn: return False
         cursor = conn.cursor()
         try:
-            # users jadvalini yangilaymiz
+            # 1. USERS
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     chat_id BIGINT PRIMARY KEY,
                     first_name VARCHAR(255),
-                    last_name VARCHAR(255),
-                    username VARCHAR(255),
                     phone VARCHAR(50),
                     location VARCHAR(500),
-                    machine_count INT DEFAULT 0,
-                    tailor_count INT DEFAULT 0,
                     role ENUM('admin', 'chevar') DEFAULT 'chevar',
                     status ENUM('pending', 'active', 'rejected') DEFAULT 'pending',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
 
-            # Agar eski baza bo'lsa, ustunlarni qo'shamiz
-            columns_to_add = [
-                ("last_name", "VARCHAR(255)"),
-                ("phone", "VARCHAR(50)"),
-                ("location", "VARCHAR(500)"),
-                ("machine_count", "INT DEFAULT 0"),
-                ("tailor_count", "INT DEFAULT 0"),
-                ("status", "ENUM('pending', 'active', 'rejected') DEFAULT 'pending'")
-            ]
-            for col_name, col_type in columns_to_add:
-                try:
-                    cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
-                except: pass # Ustun allaqachon bo'lsa xato beradi, o'tib ketamiz
+            # 2. PRODUCT TYPES
+            cursor.execute("CREATE TABLE IF NOT EXISTS product_types (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
 
-            # user_states jadvali
+            # 3. OPERATIONS (Rastenka)
+            cursor.execute("CREATE TABLE IF NOT EXISTS operations (id INT AUTO_INCREMENT PRIMARY KEY, product_type_id INT, name VARCHAR(255), price DECIMAL(10, 2), FOREIGN KEY (product_type_id) REFERENCES product_types(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
+
+            # 4. BATCHES (Ombor - Bichilgan ishlar)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_states (
-                    chat_id BIGINT PRIMARY KEY,
-                    state VARCHAR(255) DEFAULT 'main_menu',
-                    data JSON DEFAULT NULL,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    FOREIGN KEY (chat_id) REFERENCES users(chat_id) ON DELETE CASCADE
+                CREATE TABLE IF NOT EXISTS batches (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    product_type_id INT,
+                    name VARCHAR(255),
+                    total_qty INT DEFAULT 0,
+                    remaining_in_warehouse INT DEFAULT 0,
+                    status ENUM('active', 'completed') DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """)
 
-            # Boshqa jadvallar (product_types, operations, batches, batch_items, work_logs)
-            cursor.execute("CREATE TABLE IF NOT EXISTS product_types (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) UNIQUE NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
-            cursor.execute("CREATE TABLE IF NOT EXISTS operations (id INT AUTO_INCREMENT PRIMARY KEY, product_type_id INT, name VARCHAR(255), price DECIMAL(10, 2), FOREIGN KEY (product_type_id) REFERENCES product_types(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
-            cursor.execute("CREATE TABLE IF NOT EXISTS batches (id INT AUTO_INCREMENT PRIMARY KEY, product_type_id INT, name VARCHAR(255), status ENUM('active', 'completed') DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (product_type_id) REFERENCES product_types(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
-            cursor.execute("CREATE TABLE IF NOT EXISTS batch_items (id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT, size VARCHAR(50), pack_count INT, items_per_pack INT, total_qty INT, remaining_qty INT, FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
-            cursor.execute("CREATE TABLE IF NOT EXISTS work_logs (id INT AUTO_INCREMENT PRIMARY KEY, chat_id BIGINT, batch_id INT, operation_id INT, size_id INT, qty INT, total_price DECIMAL(10, 2), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (chat_id) REFERENCES users(chat_id), FOREIGN KEY (batch_id) REFERENCES batches(id), FOREIGN KEY (operation_id) REFERENCES operations(id), FOREIGN KEY (size_id) REFERENCES batch_items(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
+            # 5. BATCH ITEMS (Pachkalar/Razmerlar)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS batch_items (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    batch_id INT,
+                    size VARCHAR(50),
+                    pack_count INT,
+                    items_per_pack INT,
+                    total_qty INT,
+                    remaining_unassigned INT,
+                    FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+
+            # 6. ASSIGNMENTS (Ish tarqatish) [NEW]
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS assignments (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    chevar_id BIGINT,
+                    batch_item_id INT,
+                    qty_assigned INT,
+                    qty_completed INT DEFAULT 0,
+                    status ENUM('pending', 'accepted', 'completed') DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (chevar_id) REFERENCES users(chat_id),
+                    FOREIGN KEY (batch_item_id) REFERENCES batch_items(id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+
+            # 7. WORK LOGS (Hisobotlar)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS work_logs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    chat_id BIGINT,
+                    assignment_id INT,
+                    operation_id INT,
+                    qty INT,
+                    total_price DECIMAL(10, 2),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (chat_id) REFERENCES users(chat_id),
+                    FOREIGN KEY (assignment_id) REFERENCES assignments(id),
+                    FOREIGN KEY (operation_id) REFERENCES operations(id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """)
+
+            # 8. States
+            cursor.execute("CREATE TABLE IF NOT EXISTS user_states (chat_id BIGINT PRIMARY KEY, state VARCHAR(255), data JSON, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
+
+            # Ustunlar mavjudligini tekshirish va ALTER qilish (Mustahkamlik uchun)
+            try: cursor.execute("ALTER TABLE batches ADD COLUMN product_type_id INT AFTER id")
+            except: pass
+            try: cursor.execute("ALTER TABLE batches ADD COLUMN total_qty INT DEFAULT 0")
+            except: pass
+            try: cursor.execute("ALTER TABLE batches ADD COLUMN remaining_in_warehouse INT DEFAULT 0")
+            except: pass
 
             conn.commit()
             return True

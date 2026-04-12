@@ -38,189 +38,151 @@ def set_user_state(chat_id, state_name, data=None):
 def get_main_keyboard(role, status='pending', has_phone=False):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     if role == 'admin':
-        markup.add("📦 Tovar Turlari", "⚙️ Rastenka/Detallar")
-        markup.add("➕ Yangi Zakaz", "📊 Hisobotlar")
+        markup.add("📦 Ombor", "⚙️ Rastenka")
+        markup.add("➕ Yangi Zakaz", "📤 Ish Tarqatish")
+        markup.add("📊 Hisobotlar")
     elif status == 'active':
-        markup.add("📥 Ish Topshirish")
+        markup.add("📥 Yangi Ishlar", "📥 Ish Topshirish")
+        markup.add("📊 Mening Hisobim")
     elif not has_phone:
         markup.add("📝 Ro'yxatdan o'tish")
     return markup
 
-def get_cancel_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("❌ Bekor qilish")
-    return markup
-
-def get_reg_keyboards(step):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    if step == 'phone':
-        markup.add(types.KeyboardButton("📞 Telefon raqamni yuborish", request_contact=True))
-    elif step == 'location':
-        markup.add(types.KeyboardButton("📍 Manzilni yuborish", request_location=True))
-    markup.add("❌ Bekor qilish")
-    return markup
-
-# --- START COMMAND ---
+# --- START ---
 @bot.message_handler(commands=['start'])
 def start(message):
     try:
         chat_id = message.chat.id
         user = Database.fetch_one("SELECT * FROM users WHERE chat_id = %s", (chat_id,))
-        
         if chat_id == config.ADMIN_ID:
-            Database.execute("INSERT INTO users (chat_id, first_name, role, status) VALUES (%s, %s, 'admin', 'active') ON DUPLICATE KEY UPDATE role='admin', status='active'", 
-                       (chat_id, message.from_user.first_name))
+            Database.execute("INSERT INTO users (chat_id, first_name, role, status) VALUES (%s, %s, 'admin', 'active') ON DUPLICATE KEY UPDATE role='admin', status='active'", (chat_id, message.from_user.first_name))
             set_user_state(chat_id, 'main_menu')
             return send_msg(chat_id, "Xush kelibsiz, Admin!", get_main_keyboard('admin'))
-
-        if user:
-            if not user.get('phone'):
-                set_user_state(chat_id, 'main_menu')
-                return send_msg(chat_id, "Botdan foydalanish uchun ro'yxatdan o'tishingiz kerak.", get_main_keyboard('chevar', 'pending', False))
-            
-            if user['status'] == 'active':
-                set_user_state(chat_id, 'main_menu')
-                send_msg(chat_id, f"Xush kelibsiz, {user['first_name']}!", get_main_keyboard('chevar', 'active', True))
-            elif user['status'] == 'pending':
-                send_msg(chat_id, "Sizning arizangiz ko'rib chiqilmoqda... ⏳", get_main_keyboard('chevar', 'pending', True))
+        if user and user['status'] == 'active':
+            set_user_state(chat_id, 'main_menu')
+            send_msg(chat_id, f"Salom, {user['first_name']}!", get_main_keyboard('chevar', 'active', True))
+        elif user and user['status'] == 'pending' and user.get('phone'):
+            send_msg(chat_id, "Arizangiz ko'rib chiqilmoqda...")
         else:
-            Database.execute("INSERT INTO users (chat_id, first_name) VALUES (%s, %s)", (chat_id, message.from_user.first_name))
-            send_msg(chat_id, "Assalomu alaykum! Botdan foydalanish uchun ro'yxatdan o'tishingiz kerak.", get_main_keyboard('chevar', 'pending', False))
+            send_msg(chat_id, "Botdan foydalanish uchun ro'yxatdan o'ting.", get_main_keyboard('chevar', 'pending', False))
+    except Exception as e: logging.error(f"Start: {e}")
 
-    except Exception as e:
-        logging.error(f"Startda xato: {e}")
-
-# --- GLOBAL HANDLERS ---
+# --- GLOBAL HANDLER ---
 @bot.message_handler(func=lambda m: True, content_types=['text', 'contact', 'location'])
 def global_handler(message):
     try:
-        chat_id = message.chat.id
-        text = message.text
+        chat_id, text = message.chat.id, message.text
         user = Database.fetch_one("SELECT * FROM users WHERE chat_id = %s", (chat_id,))
         state_info = get_user_state(chat_id)
-        state = state_info['state']
-        data = state_info['data']
+        state, data = state_info['state'], state_info['data']
 
         if text == "❌ Bekor qilish":
             set_user_state(chat_id, 'main_menu')
             role = 'admin' if chat_id == config.ADMIN_ID else 'chevar'
             return send_msg(chat_id, "Bekor qilindi.", get_main_keyboard(role, user['status'] if user else 'pending', bool(user and user.get('phone'))))
 
-        # --- REGISTRATION ---
+        # REGISTRATION
         if text == "📝 Ro'yxatdan o'tish":
             set_user_state(chat_id, 'reg_name')
-            return send_msg(chat_id, "Ism va familiyangizni kiriting:", get_cancel_keyboard())
+            return send_msg(chat_id, "Ism-familiyangizni kiriting:")
         elif state == 'reg_name':
-            set_user_state(chat_id, 'reg_phone', {'full_name': text})
-            return send_msg(chat_id, "Telefon raqamingizni yuboring:", get_reg_keyboards('phone'))
+            set_user_state(chat_id, 'reg_phone', {'name': text})
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True).add(types.KeyboardButton("📞 Telefon", request_contact=True))
+            return send_msg(chat_id, "Telefon raqamingizni yuboring:", markup)
         elif state == 'reg_phone' and message.contact:
             data['phone'] = message.contact.phone_number
-            set_user_state(chat_id, 'reg_location', data)
-            return send_msg(chat_id, "Manzilingizni yuboring:", get_reg_keyboards('location'))
-        elif state == 'reg_location' and message.location:
-            data['lat'], data['lon'] = message.location.latitude, message.location.longitude
-            set_user_state(chat_id, 'reg_machines', data)
-            return send_msg(chat_id, "Mashinalar sonini kiriting:", get_cancel_keyboard())
-        elif state == 'reg_machines':
-            data['machines'] = text
-            set_user_state(chat_id, 'reg_tailors', data)
-            return send_msg(chat_id, "Chevarlar sonini kiriting:", get_cancel_keyboard())
-        elif state == 'reg_tailors':
-            Database.execute("UPDATE users SET first_name=%s, phone=%s, location=%s, machine_count=%s, tailor_count=%s, status='pending' WHERE chat_id=%s",
-                       (data['full_name'], data['phone'], f"{data['lat']},{data['lon']}", data['machines'], text, chat_id))
-            set_user_state(chat_id, 'pending_approval')
-            send_msg(chat_id, "Arizangiz qabul qilindi. ✅", get_main_keyboard('chevar', 'pending', True))
-            markup = types.InlineKeyboardMarkup().row(types.InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve:{chat_id}"), types.InlineKeyboardButton("❌ Rad etish", callback_data=f"reject:{chat_id}"))
-            send_msg(config.ADMIN_ID, f"🆕 <b>Ariza:</b>\n👤 {data['full_name']}\n📞 {data['phone']}\n⚙️ Mashina: {data['machines']}\n🧵 Chevarlar: {text}", markup)
-            return bot.send_location(config.ADMIN_ID, data['lat'], data['lon'])
+            Database.execute("INSERT INTO users (chat_id, first_name, phone, status) VALUES (%s, %s, %s, 'pending') ON DUPLICATE KEY UPDATE first_name=%s, phone=%s, status='pending'", (chat_id, data['name'], data['phone'], data['name'], data['phone']))
+            set_user_state(chat_id, 'pending')
+            send_msg(chat_id, "Arizangiz Adminga yuborildi. ✅", get_main_keyboard('chevar', 'pending', True))
+            markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"appr:{chat_id}"))
+            return send_msg(config.ADMIN_ID, f"🆕 Ariza: {data['name']} ({data['phone']})", markup)
 
-        # --- ADMIN ---
+        # ADMIN
         if chat_id == config.ADMIN_ID:
-            if text == "📦 Tovar Turlari":
-                types_list = Database.fetch_all("SELECT * FROM product_types")
-                resp = "📂 <b>Mavjud tovar turlari:</b>\n\n" + "\n".join([f"• {t['name']}" for t in types_list])
-                set_user_state(chat_id, 'add_type')
-                return send_msg(chat_id, resp + "\n\n<i>Yangi tur nomini yuboring:</i>", get_cancel_keyboard())
-            elif state == 'add_type':
-                Database.execute("INSERT IGNORE INTO product_types (name) VALUES (%s)", (text,))
-                set_user_state(chat_id, 'main_menu')
-                return send_msg(chat_id, f"✅ Tur '{text}' qo'shildi.", get_main_keyboard('admin'))
-            elif text == "⚙️ Rastenka/Detallar":
-                markup = types.InlineKeyboardMarkup()
-                for t in Database.fetch_all("SELECT * FROM product_types"): markup.add(types.InlineKeyboardButton(t['name'], callback_data=f"rastenka:{t['id']}"))
-                return send_msg(chat_id, "Turini tanlang:", markup)
-            elif state == 'ent_op_name':
-                set_user_state(chat_id, 'ent_op_price', {**data, 'name': text})
-                return send_msg(chat_id, f"'{text}' narxi:", get_cancel_keyboard())
-            elif state == 'ent_op_price':
-                Database.execute("INSERT INTO operations (product_type_id, name, price) VALUES (%s, %s, %s)", (data['type_id'], data['name'], float(text)))
-                set_user_state(chat_id, 'main_menu')
-                return send_msg(chat_id, "✅ Saqlandi.", get_main_keyboard('admin'))
+            if text == "📦 Ombor":
+                batches = Database.fetch_all("SELECT b.*, pt.name as type_name FROM batches b JOIN product_types pt ON b.product_type_id = pt.id WHERE b.status='active'")
+                resp = "📦 <b>Ombordagi bichilgan ishlar:</b>\n\n"
+                for b in batches: resp += f"🔹 {b['name']} ({b['type_name']})\n   Qoldi: {b['remaining_in_warehouse']} dona\n\n"
+                return send_msg(chat_id, resp)
+            
             elif text == "➕ Yangi Zakaz":
                 markup = types.InlineKeyboardMarkup()
-                for t in Database.fetch_all("SELECT * FROM product_types"): markup.add(types.InlineKeyboardButton(t['name'], callback_data=f"batch:{t['id']}"))
-                return send_msg(chat_id, "Turini tanlang:", markup)
-            elif state == 'ent_batch_name':
-                set_user_state(chat_id, 'ent_batch_items', {**data, 'name': text})
-                return send_msg(chat_id, "Format: <code>Razmer | Pachka | Dona</code>", get_cancel_keyboard())
-            elif state == 'ent_batch_items':
+                for t in Database.fetch_all("SELECT * FROM product_types"): markup.add(types.InlineKeyboardButton(t['name'], callback_data=f"b_type:{t['id']}"))
+                return send_msg(chat_id, "Tini tanlang:", markup)
+            elif state == 'b_name':
+                set_user_state(chat_id, 'b_qty', {**data, 'name': text})
+                return send_msg(chat_id, f"'{text}' dan necha dona bichildi?")
+            elif state == 'b_qty':
+                qty = int(text)
+                b_id = Database.execute("INSERT INTO batches (product_type_id, name, total_qty, remaining_in_warehouse) VALUES (%s, %s, %s, %s)", (data['t_id'], data['name'], qty, qty))
+                set_user_state(chat_id, 'b_items', {'b_id': b_id, 'name': data['name']})
+                return send_msg(chat_id, "Razmerlarni kiriting (Format: `XL | 10 | 5`):")
+            elif state == 'b_items':
                 p = text.split('|')
-                b_id = Database.execute("INSERT INTO batches (product_type_id, name) VALUES (%s, %s)", (data['type_id'], data['name']))
-                Database.execute("INSERT INTO batch_items (batch_id, size, pack_count, items_per_pack, total_qty, remaining_qty) VALUES (%s, %s, %s, %s, %s, %s)", (b_id, p[0].strip(), int(p[1]), int(p[2]), int(p[1])*int(p[2]), int(p[1])*int(p[2])))
+                qty = int(p[1]) * int(p[2])
+                Database.execute("INSERT INTO batch_items (batch_id, size, pack_count, items_per_pack, total_qty, remaining_unassigned) VALUES (%s, %s, %s, %s, %s, %s)", (data['b_id'], p[0].strip(), int(p[1]), int(p[2]), qty, qty))
                 set_user_state(chat_id, 'main_menu')
-                return send_msg(chat_id, f"✅ Zakaz ID: {b_id}", get_main_keyboard('admin'))
-            elif text == "📊 Hisobotlar":
-                logs = Database.fetch_all("SELECT chat_id, SUM(qty) as q FROM work_logs GROUP BY chat_id")
-                resp = "📊 <b>Hisobot:</b>\n" + "\n".join([f"👤 {l['chat_id']}: {l['q']} dona" for l in logs])
-                return send_msg(chat_id, resp, get_main_keyboard('admin'))
+                return send_msg(chat_id, "✅ Omborga qozoqlandi.", get_main_keyboard('admin'))
 
-        # --- CHEVAR ---
-        if user and user['status'] == 'active':
-            if text == "📥 Ish Topshirish":
-                set_user_state(chat_id, 'ch_ent_id')
-                return send_msg(chat_id, "Zakaz ID kiriting:", get_cancel_keyboard())
-            elif state == 'ch_ent_id':
-                items = Database.fetch_all("SELECT * FROM batch_items WHERE batch_id=%s", (int(text),))
+            elif text == "📤 Ish Tarqatish":
                 markup = types.InlineKeyboardMarkup()
-                for i in items: markup.add(types.InlineKeyboardButton(f"{i['size']} ({i['remaining_qty']})", callback_data=f"ch_sz:{i['id']}"))
-                return send_msg(chat_id, "Razmer:", markup)
-            elif state == 'ch_ent_qty':
-                item = Database.fetch_one("SELECT * FROM batch_items WHERE id=%s", (data['sz_id'],))
-                qty = int(text) * item['items_per_pack']
-                Database.execute("INSERT INTO work_logs (chat_id, batch_id, size_id, qty) VALUES (%s, %s, %s, %s)", (chat_id, item['batch_id'], item['id'], qty))
-                Database.execute("UPDATE batch_items SET remaining_qty = remaining_qty - %s WHERE id=%s", (qty, item['id']))
-                set_user_state(chat_id, 'main_menu')
-                return send_msg(chat_id, f"✅ Qabul qilindi: {qty} dona", get_main_keyboard('chevar', 'active', True))
+                for b in Database.fetch_all("SELECT * FROM batches WHERE remaining_in_warehouse > 0"): markup.add(types.InlineKeyboardButton(b['name'], callback_data=f"dist_b:{b['id']}"))
+                return send_msg(chat_id, "Qaysi ishni tarqatamiz?", markup)
 
-    except Exception as e: logging.error(f"Error: {e}")
+        # CHEVAR
+        if user and user['status'] == 'active':
+            if text == "📥 Yangi Ishlar":
+                assigns = Database.fetch_all("SELECT a.*, b.name as b_name, bi.size FROM assignments a JOIN batch_items bi ON a.batch_item_id = bi.id JOIN batches b ON bi.batch_id = b.id WHERE a.chevar_id = %s AND a.status = 'pending'", (chat_id,))
+                if not assigns: return send_msg(chat_id, "Yangi ishlar yo'q.")
+                for a in assigns:
+                    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("✅ Qabul qilish", callback_data=f"acc_job:{a['id']}"))
+                    send_msg(chat_id, f"📥 <b>Yangi ish:</b>\nZakaz: {a['b_name']}\nRazmer: {a['size']}\nSoni: {a['qty_assigned']} dona", markup)
+            
+            elif text == "📥 Ish Topshirish":
+                assigns = Database.fetch_all("SELECT a.*, b.name as b_name, bi.size FROM assignments a JOIN batch_items bi ON a.batch_item_id = bi.id JOIN batches b ON bi.batch_id = b.id WHERE a.chevar_id = %s AND a.status = 'accepted'", (chat_id,))
+                if not assigns: return send_msg(chat_id, "Sizda qabul qilingan ishlar yo'q.")
+                markup = types.InlineKeyboardMarkup()
+                for a in assigns: markup.add(types.InlineKeyboardButton(f"{a['b_name']} ({a['size']})", callback_data=f"report_a:{a['id']}"))
+                send_msg(chat_id, "Qaysi ishni topshirasiz?", markup)
+
+    except Exception as e: logging.error(f"Global: {e}")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     chat_id, data = call.message.chat.id, call.data
-    if data.startswith("approve:"):
+    if data.startswith("appr:"):
         u_id = int(data.split(":")[1])
         Database.execute("UPDATE users SET status='active' WHERE chat_id=%s", (u_id,))
         send_msg(u_id, "✅ Tasdiqlandi!", get_main_keyboard('chevar', 'active', True))
         bot.edit_message_text("✅ Tasdiqlandi", chat_id, call.message.message_id)
-    elif data.startswith("reject:"):
-        u_id = int(data.split(":")[1])
-        Database.execute("UPDATE users SET status='rejected' WHERE chat_id=%s", (u_id,))
-        send_msg(u_id, "❌ Rad etildi", get_main_keyboard('chevar', 'pending', False))
-    elif data.startswith("rastenka:"):
-        set_user_state(chat_id, 'ent_op_name', {'type_id': data.split(":")[1]})
-        send_msg(chat_id, "Detal nomi:", get_cancel_keyboard())
-    elif data.startswith("batch:"):
-        set_user_state(chat_id, 'ent_batch_name', {'type_id': data.split(":")[1]})
-        send_msg(chat_id, "Zakaz nomi:", get_cancel_keyboard())
-    elif data.startswith("ch_sz:"):
-        set_user_state(chat_id, 'ch_ent_qty', {'sz_id': data.split(":")[1]})
-        send_msg(chat_id, "Pachka soni:", get_cancel_keyboard())
-    bot.answer_callback_query(call.id)
+    
+    elif data.startswith("b_type:"):
+        set_user_state(chat_id, 'b_name', {'t_id': data.split(":")[1]})
+        send_msg(chat_id, "Zakaz nomini kiriting:")
+    
+    elif data.startswith("dist_b:"):
+        b_id = data.split(":")[1]
+        markup = types.InlineKeyboardMarkup()
+        for i in Database.fetch_all("SELECT * FROM batch_items WHERE batch_id=%s AND remaining_unassigned > 0", (b_id,)): markup.add(types.InlineKeyboardButton(f"{i['size']} ({i['remaining_unassigned']})", callback_data=f"dist_i:{i['id']}"))
+        bot.edit_message_text("Razmerni tanlang:", chat_id, call.message.message_id, reply_markup=markup)
+    
+    elif data.startswith("dist_i:"):
+        i_id = data.split(":")[1]
+        markup = types.InlineKeyboardMarkup()
+        for u in Database.fetch_all("SELECT * FROM users WHERE role='chevar' AND status='active'"): markup.add(types.InlineKeyboardButton(u['first_name'], callback_data=f"dist_u:{i_id}:{u['chat_id']}"))
+        bot.edit_message_text("Chevarni tanlang:", chat_id, call.message.message_id, reply_markup=markup)
+    
+    elif data.startswith("dist_u:"):
+        p = data.split(":")
+        set_user_state(chat_id, 'dist_qty', {'i_id': p[1], 'u_id': p[2]})
+        send_msg(chat_id, "Necha dona berasiz?")
 
-@app.route('/reset_users')
-def reset():
-    Database.execute("UPDATE users SET status='pending', phone=NULL WHERE chat_id != %s", (config.ADMIN_ID,))
-    return "Ok", 200
+    elif data.startswith("acc_job:"):
+        a_id = data.split(":")[1]
+        Database.execute("UPDATE assignments SET status='accepted' WHERE id=%s", (a_id,))
+        bot.edit_message_text("✅ Qabul qilindi. Ishni boshlang!", chat_id, call.message.message_id)
+
+    bot.answer_callback_query(call.id)
 
 @app.route('/' + config.BOT_TOKEN, methods=['POST'])
 def getMessage():
